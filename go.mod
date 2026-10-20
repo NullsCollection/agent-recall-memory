@@ -1,4 +1,4 @@
-module github.com/raffy/memdb
+module github.com/NullsCollection/memdb
 
 go 1.25.0
 
