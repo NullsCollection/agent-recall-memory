@@ -53,8 +53,8 @@ ollama pull qwen3-embedding:0.6b
 Then:
 
 ```bash
-git clone https://github.com/NullsCollection/agent--recall-memory.git
-cd agent--recall-memory
+git clone https://github.com/NullsCollection/agent-recall-memory.git
+cd agent-recall-memory
 go install ./...
 ```
 
