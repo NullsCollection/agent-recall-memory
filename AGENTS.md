@@ -2,13 +2,11 @@
 
 ## Status
 
-Code shipped — four Go source files, `go.mod`, passing tests. `PLAN.md` is the spec and the
-single source of truth; its decisions table is **locked** (vector store, embedding model, semantic
-unit, search scope, push trigger, redaction). If you disagree with a locked decision, surface it to
-the user rather than silently picking differently.
+Code shipped — four Go source files, `go.mod`, passing tests. The core decisions are **locked**
+(vector store, embedding model, semantic unit, search scope, push trigger, redaction). If you
+disagree with a locked decision, surface it to the user rather than silently picking differently.
 
-Phase gates (do not start Phase N+1 before N's gate passes — each phase in `PLAN.md` ends with a
-bold **Gate:**):
+Phase gates (do not start Phase N+1 before N's gate passes):
 
 - Phase 0/1 — MET. Host backfill produced 253 rows; cross-repo search returned recognisable hits.
 - Phase 2 — `memdb eval` + golden harness implemented and unit-tested, but the actual **eval-and-tune
@@ -36,7 +34,7 @@ appear next to it. `.gitignore` covers `/memdb`, `/memdb.exe`, `*.sqlite` — ne
 ## Hard constraints (these will be violated by default)
 
 - **One dependency only:** `modernc.org/sqlite` (pure Go, no cgo). No other SQLite driver, no ORM.
-- **Four source files, hard limit.** `PLAN.md`: "Resist adding a fifth." Map all work to exactly one
+- **Four source files, hard limit.** Resist adding a fifth. Map all work to exactly one
   of `main.go` (CLI dispatch, `eval`, `stats`, JSON output), `store.go` (schema, `upsert`, `loadAll`,
   `reindex`, float32⇄BLOB, meta), `embed.go` (Ollama client, cosine, top-K, `queryPrefix`), or
   `extract.go` (jsonl→units, redaction, short-turn filter, mtime guards). A new harness source is
@@ -103,8 +101,11 @@ prose survival (`TestRedaction` is the model).
 
 ## Host vs. sandbox
 
-`PLAN.md` targets a **Windows host**: the SessionStart hook spawns via
-`cmd /c start /b memdb index --quiet` (PATH is `%USERPROFILE%\go\bin`). Go build, store, embed, and
-cosine logic are cross-platform, but the hook command is Windows-only — do not rewrite it to a POSIX
-shell invocation. In a sandbox without Ollama, every embed-dependent path fails; only
-`extract_test.go` and pure-Go logic (cosine, parsing, redaction) are verifiable offline.
+memdb targets a **Windows host**: the SessionStart hook spawns via
+`MSYS_NO_PATHCONV=1 cmd /c start /b memdb index --quiet >/dev/null 2>&1` (PATH is
+`%USERPROFILE%\go\bin`). Go build, store, embed, and cosine logic are cross-platform, but the hook
+command is Windows-only — keep `cmd /c start /b` as the detached spawn. Both extras are required:
+Claude Code runs hooks through Git Bash, which rewrites `/c` to a path unless `MSYS_NO_PATHCONV=1`
+is set (`cmd` then opens a shell and `memdb` never runs), and without the redirect the hook waits on
+the run. In a sandbox without Ollama, every embed-dependent path fails; only `extract_test.go` and
+pure-Go logic (cosine, parsing, redaction) are verifiable offline.
