@@ -120,11 +120,15 @@ blocks the prompt:
   },
   "hooks": {
     "SessionStart": [
-      { "type": "command", "command": "cmd /c start /b memdb index --quiet" }
+      { "type": "command", "command": "MSYS_NO_PATHCONV=1 cmd /c start /b memdb index --quiet >/dev/null 2>&1" }
     ]
   }
 }
 ```
+
+Keep the whole line. Claude Code runs hooks through Git Bash on Windows: without `MSYS_NO_PATHCONV=1`,
+`/c` gets rewritten to a path and `cmd` opens a shell instead of running `memdb`. Without the
+redirect, the session start waits on the run and its output lands in the conversation.
 
 Under `--quiet` the indexer fails silently if Ollama is down — the next session start retries.
 The failure is still recorded: `memdb stats` shows `last_error` and prints a `WARNING:` when the
@@ -168,9 +172,6 @@ left at its minimum.
   (JSONL → units, redaction).
 - **Adding another agent harness is another function, not an interface.** Only extraction is
   harness-specific; the store is the protocol.
-
-`PLAN.md` carries the full reasoning, the phase-by-phase build log, and the deferred items — each
-with the trigger condition that would justify building it.
 
 ## Status and limitations
 
