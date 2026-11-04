@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// --- Redaction (PLAN.md 1d) ---
+// --- Redaction ---
 //
 // Runs only at ingest. The pull path can leak a repo-A secret into a repo-B
 // session, so redact-in-place — but keep surrounding prose, which is the
@@ -39,7 +39,7 @@ func redact(s string) string {
 	return s
 }
 
-// --- Turn-fusing thresholds (PLAN.md 1c, tuned in Phase 2) ---
+// --- Turn-fusing thresholds (tuned in Phase 2) ---
 
 const (
 	shortTurnChars = 40
@@ -56,7 +56,7 @@ var approvals = map[string]bool{
 }
 
 // noisePrefixes are harness-injected blocks we never want as the head of a
-// fused unit. PLAN.md 1c.
+// fused unit.
 var noisePrefixes = []string{
 	"<command-name>",
 	"<local-command",
@@ -355,8 +355,8 @@ func dedupTools(in []string) []string {
 
 // --- file walk ---
 
-// extractAll walks ~/.claude/projects/*/*.jsonl, applying the two mtime guards
-// (PLAN.md 1c): skip files <24h old (unsettled), and skip files older than the
+// extractAll walks ~/.claude/projects/*/*.jsonl, applying the two mtime guards:
+// skip files <24h old (unsettled), and skip files older than the
 // last successful index unless force. Returns units in walk order.
 // shortTurnN overrides the short-turn char threshold (Phase 2 knob).
 func extractAll(force bool, lastIndex string, shortTurnN int) ([]unit, error) {

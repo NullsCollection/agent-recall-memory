@@ -18,6 +18,10 @@ const ollamaURL = "http://localhost:11434/api/embed"
 // few seconds on the 0.6b model; the index path should never die mid-flight.
 const embedBatchTimeout = 5 * time.Minute
 
+// embedBatchSize keeps requests well under Ollama's payload limits while
+// amortizing round-trips. Also the commit unit for `index`.
+const embedBatchSize = 32
+
 type embedRequest struct {
 	Model string   `json:"model"`
 	Input []string `json:"input"`
@@ -90,10 +94,9 @@ func embedQuery(q string) ([]float32, error) {
 // keep requests well under Ollama's payload limits, large enough to amortize
 // round-trips. ~460 units → ~15 requests.
 func embedMany(texts []string) ([][]float32, error) {
-	const batchSize = 32
 	out := make([][]float32, 0, len(texts))
-	for i := 0; i < len(texts); i += batchSize {
-		j := i + batchSize
+	for i := 0; i < len(texts); i += embedBatchSize {
+		j := i + embedBatchSize
 		if j > len(texts) {
 			j = len(texts)
 		}
