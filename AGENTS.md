@@ -55,7 +55,10 @@ appear next to it. `.gitignore` covers `/memdb`, `/memdb.exe`, `*.sqlite` — ne
   design:
   - `search` / `add` / `eval` **fail loudly** with an actionable message.
   - `index --quiet` **fails silently** (exit 0) so SessionStart output doesn't pollute every
-    conversation; the next session start retries. Do not "fix" the silent failure.
+    conversation; the next session start retries. Do not "fix" the silent failure. Every run
+    records `last_attempt` / `last_error` in `meta`, and `memdb stats` prints a `WARNING:` when
+    the last run failed or `last_indexed` is over 7 days old (Claude Code deletes transcripts
+    after `cleanupPeriodDays`, default 30 — a stalled indexer loses history for good).
 - The `queryPrefix` (qwen3 retrieval instruction) is auto-applied on `search` and on `eval`'s
   default. Pass `eval --query-prefix ""` to measure the no-prefix baseline.
 
@@ -65,8 +68,12 @@ Agents commonly wonder why a specific turn is missing or counts look low. From `
 
 - **24h-unsettled guard** — `extractAll` skips any `.jsonl` with mtime newer than 24h. Today's live
   session is **not** in the store. Not a bug.
-- **`last_indexed` mtime guard** — files older than the last successful index are skipped unless
-  `--force`. The no-op path is walk+stat only (~10 ms).
+- **`last_indexed` mtime guard** — files older than `last_indexed` are skipped unless `--force`.
+  `last_indexed` is a watermark set to **run start − 24h**, not "now" — otherwise files skipped as
+  unsettled would fall behind the watermark and never be indexed. The no-op path is walk+stat only
+  (~10 ms).
+- **Resume** — `index` commits per 32-unit batch and skips units already stored with identical
+  text, so a run killed mid-backlog picks up where it stopped.
 - **Short-turn filter** — user turns under 40 chars or bare approvals (`ok`, `yes`, `go`, …) borrow
   the **preceding** assistant message; if there isn't one, the unit is dropped. Tune via
   `index --force --short-turn N`.

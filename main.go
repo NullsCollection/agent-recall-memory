@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -81,40 +82,80 @@ func cmdIndex(args []string) error {
 	}
 	defer db.Close()
 
+	err = runIndex(db, *force, *shortTurn, *quiet)
+	recordIndexRun(db, err)
+	if err != nil && *quiet {
+		// PLAN.md decision 5 / Risks: --quiet fails silently — output would
+		// pollute every session and the next start retries. The error is kept
+		// in meta so `memdb stats` can still surface it.
+		return nil
+	}
+	return err
+}
+
+func runIndex(db *sql.DB, force bool, shortTurn int, quiet bool) error {
+	start := time.Now()
 	last, err := metaGet(db, metaLastIndexed)
 	if err != nil {
 		return err
 	}
-	units, err := extractAll(*force, last, *shortTurn)
+	units, err := extractAll(force, last, shortTurn)
 	if err != nil {
 		return err
 	}
-	if len(units) == 0 {
-		if !*quiet {
-			fmt.Println("nothing to index")
+
+	// Skip units already stored with the same text, so a run killed partway
+	// through a backlog resumes instead of re-embedding from scratch.
+	var todo []unit
+	for _, u := range units {
+		same, err := storedUnchanged(db, u.ID, u.Text)
+		if err != nil {
+			return err
 		}
-		return nil
+		if !same {
+			todo = append(todo, u)
+		}
 	}
 
-	texts := make([]string, len(units))
-	for i, u := range units {
+	// Commit per batch: one failed batch keeps everything before it.
+	for i := 0; i < len(todo); i += embedBatchSize {
+		j := min(i+embedBatchSize, len(todo))
+		if err := indexBatch(db, todo[i:j]); err != nil {
+			return fmt.Errorf("batch at offset %d: %w", i, err)
+		}
+	}
+
+	// Watermark is start-24h, not now: extractAll skipped files still inside
+	// the unsettled window, and they must be picked up on a later run.
+	cutoff := start.Add(-unsettleAge).UTC().Format(time.RFC3339)
+	if err := metaSet(db, metaLastIndexed, cutoff); err != nil {
+		return err
+	}
+	if !quiet {
+		if len(todo) == 0 {
+			fmt.Println("nothing to index")
+		} else {
+			fmt.Printf("indexed %d units (%d unchanged)\n", len(todo), len(units)-len(todo))
+		}
+	}
+	return nil
+}
+
+// indexBatch embeds one batch and upserts it in its own transaction.
+func indexBatch(db *sql.DB, us []unit) error {
+	texts := make([]string, len(us))
+	for i, u := range us {
 		texts[i] = u.Text
 	}
-	vecs, err := embedMany(texts)
+	vecs, err := embedBatch(texts)
 	if err != nil {
-		// PLAN.md decision 5 / Risks: --quiet fails silently — output would
-		// pollute every session and the next start retries.
-		if *quiet {
-			return nil
-		}
 		return err
 	}
-
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
-	for i, u := range units {
+	for i, u := range us {
 		m := memory{
 			ID:     u.ID,
 			Text:   u.Text,
@@ -129,17 +170,18 @@ func cmdIndex(args []string) error {
 			return err
 		}
 	}
-	if err := metaSet(tx, metaLastIndexed, time.Now().UTC().Format(time.RFC3339)); err != nil {
-		tx.Rollback()
-		return err
+	return tx.Commit()
+}
+
+// recordIndexRun stamps each attempt and its outcome in meta, so a hook that
+// fails silently on every session start still shows up in `memdb stats`.
+func recordIndexRun(db *sql.DB, runErr error) {
+	msg := ""
+	if runErr != nil {
+		msg = runErr.Error()
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if !*quiet {
-		fmt.Printf("indexed %d units\n", len(units))
-	}
-	return nil
+	_ = metaSet(db, metaLastAttempt, time.Now().UTC().Format(time.RFC3339))
+	_ = metaSet(db, metaLastError, msg)
 }
 
 // --- add ---
@@ -367,11 +409,56 @@ func cmdStats(args []string) error {
 	printGroup("by model", `SELECT model, COUNT(*) FROM memories GROUP BY model ORDER BY COUNT(*) DESC`)
 
 	last, _ := metaGet(db, metaLastIndexed)
-	if last == "" {
-		last = "(never)"
+	attempt, _ := metaGet(db, metaLastAttempt)
+	lastErr, _ := metaGet(db, metaLastError)
+	now := time.Now()
+	fmt.Println("last_indexed:", describeAge(last, now))
+	if attempt != "" {
+		fmt.Println("last_attempt:", describeAge(attempt, now))
 	}
-	fmt.Println("last_indexed:", last)
+	if lastErr != "" {
+		fmt.Println("last_error:", lastErr)
+	}
+	if warn := indexHealth(last, lastErr, now); warn != "" {
+		fmt.Println("WARNING:", warn)
+	}
 	return nil
+}
+
+// staleAfter is how old last_indexed may get before stats warns. Claude Code
+// deletes transcripts after cleanupPeriodDays (default 30), so a stalled
+// indexer has to be noticed well inside that window.
+const staleAfter = 7 * 24 * time.Hour
+
+// indexHealth returns a warning for stats, or "" when indexing looks healthy.
+func indexHealth(lastIndexed, lastErr string, now time.Time) string {
+	if lastErr != "" {
+		return "last index run failed — run `memdb index` to see it live"
+	}
+	if lastIndexed == "" {
+		return "never indexed — run `memdb index`"
+	}
+	t, err := time.Parse(time.RFC3339, lastIndexed)
+	if err != nil {
+		return ""
+	}
+	if age := now.Sub(t); age > staleAfter {
+		return fmt.Sprintf("last_indexed is %d days old — Claude Code deletes transcripts after cleanupPeriodDays (default 30), unindexed ones are lost",
+			int(age.Hours()/24))
+	}
+	return ""
+}
+
+// describeAge renders an RFC3339 meta timestamp with its age in days.
+func describeAge(ts string, now time.Time) string {
+	if ts == "" {
+		return "(never)"
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return ts
+	}
+	return fmt.Sprintf("%s (%d days ago)", ts, int(now.Sub(t).Hours()/24))
 }
 
 // --- eval (PLAN.md Phase 2) ---

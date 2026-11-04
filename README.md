@@ -127,6 +127,9 @@ blocks the prompt:
 ```
 
 Under `--quiet` the indexer fails silently if Ollama is down — the next session start retries.
+The failure is still recorded: `memdb stats` shows `last_error` and prints a `WARNING:` when the
+last run failed or nothing has been indexed for 7+ days. Check it now and then — Claude Code
+deletes transcripts after `cleanupPeriodDays` (default 30), so a stalled indexer loses history.
 Search, by contrast, fails loudly with an actionable message, because a silent failure there would
 look like "no memories" instead of "no Ollama".
 

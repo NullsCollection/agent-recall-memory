@@ -1,9 +1,14 @@
 package main
 
 import (
+	"database/sql"
+	"errors"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestRedaction is the fixture required by PLAN.md 1d: a string containing each
@@ -430,5 +435,145 @@ func TestFindRank(t *testing.T) {
 	}
 	if r := findRank(hits, "not present"); r != 0 {
 		t.Errorf("expected miss (0), got %d", r)
+	}
+}
+
+// --- index watermark, resume, health ---
+
+// tempHomeDB points the home dir at a temp dir (so openDB and extractAll stay
+// off the real ~/.claude) and returns the opened store plus the projects root.
+func tempHomeDB(t *testing.T) (*sql.DB, string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	db, err := openDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db, filepath.Join(home, ".claude", "projects")
+}
+
+const watermarkSession = `{"type":"user","uuid":"u1","cwd":"/home/u/myrepo","timestamp":"2025-01-02T15:04:05Z","message":{"role":"user","content":"how do I configure the database connection?"}}
+{"type":"assistant","uuid":"a1","timestamp":"2025-01-02T15:04:06Z","message":{"role":"assistant","content":[{"type":"text","text":"Use the DATABASE_URL env var."}]}}
+`
+
+func writeSessionAged(t *testing.T, root string, age time.Duration) (string, time.Time) {
+	t.Helper()
+	p := filepath.Join(root, "proj", "s.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, p, watermarkSession)
+	mt := time.Now().Add(-age)
+	if err := os.Chtimes(p, mt, mt); err != nil {
+		t.Fatal(err)
+	}
+	return p, mt
+}
+
+// A file skipped as unsettled must stay newer than the watermark, or no later
+// run will ever pick it up.
+func TestIndexWatermarkKeepsUnsettledFiles(t *testing.T) {
+	db, root := tempHomeDB(t)
+	_, mt := writeSessionAged(t, root, 12*time.Hour)
+
+	if err := runIndex(db, false, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	wm, err := metaGet(db, metaLastIndexed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := time.Parse(time.RFC3339, wm)
+	if err != nil {
+		t.Fatalf("bad watermark %q: %v", wm, err)
+	}
+	if mt.Before(w) {
+		t.Errorf("unsettled file mtime %v is before watermark %v — it would be skipped forever", mt, w)
+	}
+}
+
+// Units already stored with identical text must not be re-embedded, so a
+// killed run resumes. Runs offline: if nothing needs embedding, Ollama is
+// never called.
+func TestRunIndexSkipsUnchangedUnits(t *testing.T) {
+	db, root := tempHomeDB(t)
+	writeSessionAged(t, root, 48*time.Hour)
+
+	units, err := extractAll(true, "", 0)
+	if err != nil || len(units) == 0 {
+		t.Fatalf("extractAll: %d units, err=%v", len(units), err)
+	}
+	for _, u := range units {
+		m := memory{ID: u.ID, Text: u.Text, Vector: []float32{1, 0}, Cwd: u.Cwd, Repo: u.Repo, Kind: "turn", TS: u.TS}
+		if err := upsert(db, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r, w, _ := os.Pipe()
+	stdout := os.Stdout
+	os.Stdout = w
+	runErr := runIndex(db, true, 0, false)
+	w.Close()
+	os.Stdout = stdout
+	out, _ := io.ReadAll(r)
+
+	if runErr != nil {
+		t.Fatalf("runIndex: %v", runErr)
+	}
+	if !strings.Contains(string(out), "nothing to index") {
+		t.Errorf("expected all units skipped as unchanged, got %q", out)
+	}
+
+	same, err := storedUnchanged(db, units[0].ID, units[0].Text+" edited")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same {
+		t.Error("changed text must not count as unchanged")
+	}
+}
+
+func TestRecordIndexRun(t *testing.T) {
+	db, _ := tempHomeDB(t)
+
+	recordIndexRun(db, errors.New("ollama unreachable"))
+	if got, _ := metaGet(db, metaLastError); got != "ollama unreachable" {
+		t.Errorf("last_error=%q after failure", got)
+	}
+	if got, _ := metaGet(db, metaLastAttempt); got == "" {
+		t.Error("last_attempt not set")
+	}
+
+	recordIndexRun(db, nil)
+	if got, _ := metaGet(db, metaLastError); got != "" {
+		t.Errorf("last_error=%q, want cleared after success", got)
+	}
+}
+
+func TestIndexHealth(t *testing.T) {
+	now := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	fresh := now.Add(-2 * 24 * time.Hour).Format(time.RFC3339)
+	stale := now.Add(-81 * 24 * time.Hour).Format(time.RFC3339)
+	cases := []struct {
+		name, last, err string
+		wantWarn        bool
+	}{
+		{"healthy", fresh, "", false},
+		{"never", "", "", true},
+		{"stale", stale, "", true},
+		{"failed", fresh, "boom", true},
+	}
+	for _, c := range cases {
+		got := indexHealth(c.last, c.err, now)
+		if (got != "") != c.wantWarn {
+			t.Errorf("%s: indexHealth=%q, wantWarn=%v", c.name, got, c.wantWarn)
+		}
+	}
+	if got := indexHealth(stale, "", now); !strings.Contains(got, "81 days") {
+		t.Errorf("stale warning should state the age: %q", got)
 	}
 }

@@ -21,6 +21,8 @@ const (
 	repoBoost = 1.15
 
 	metaLastIndexed = "last_indexed"
+	metaLastAttempt = "last_attempt"
+	metaLastError   = "last_error"
 )
 
 const schema = `
@@ -145,7 +147,18 @@ func loadAll(db *sql.DB, model string) ([]memory, error) {
 	return out, rows.Err()
 }
 
-// setText updates text/vector/model for an existing row (used by reindex).
+// storedUnchanged reports whether id is already stored with this exact text
+// and a vector on the current model, i.e. re-embedding it would be wasted work.
+func storedUnchanged(db *sql.DB, id, text string) (bool, error) {
+	var n int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM memories
+		WHERE id = ? AND text = ? AND model = ? AND vector IS NOT NULL`,
+		id, text, embeddingModel).Scan(&n)
+	return n > 0, err
+}
+
+// setVector updates vector/dim/model for an existing row (used by reindex).
 func setVector(db execer, id string, vec []float32) error {
 	_, err := db.Exec(`
 		UPDATE memories SET vector = ?, dim = ?, model = ? WHERE id = ?`,
