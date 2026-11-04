@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// TestRedaction is the fixture required by PLAN.md 1d: a string containing each
+// TestRedaction is the redaction fixture: a string containing each
 // pattern comes out fully redacted with surrounding prose intact.
 func TestRedaction(t *testing.T) {
 	// One representative hit per pattern, embedded in prose. Each non-secret

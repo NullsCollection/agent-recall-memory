@@ -11,13 +11,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Locked model + dim (PLAN.md decision #2). Both are stamped on every row so a
+// Locked model + dim. Both are stamped on every row so a
 // future model swap is `reindex`, not a migration.
 const (
 	embeddingModel = "qwen3-embedding:0.6b"
 	embeddingDim   = 1024
 
-	// Same-repo score multiplier (PLAN.md 1e). Tuned in Phase 2.
+	// Same-repo score multiplier. Tuned in Phase 2.
 	repoBoost = 1.15
 
 	metaLastIndexed = "last_indexed"
@@ -101,7 +101,7 @@ func openDB() (*sql.DB, error) {
 }
 
 // upsert inserts or replaces a row by id. Deterministic ids make re-indexing
-// idempotent (PLAN.md schema note).
+// idempotent.
 func upsert(db execer, m memory) error {
 	var vec []byte
 	if m.Vector != nil {

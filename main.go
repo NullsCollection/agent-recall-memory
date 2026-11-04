@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// usage mirrors PLAN.md's CLI surface.
+// usage prints the CLI surface.
 func usage() {
 	fmt.Fprintln(os.Stderr, `memdb — agent memory
 
@@ -85,7 +85,7 @@ func cmdIndex(args []string) error {
 	err = runIndex(db, *force, *shortTurn, *quiet)
 	recordIndexRun(db, err)
 	if err != nil && *quiet {
-		// PLAN.md decision 5 / Risks: --quiet fails silently — output would
+		// --quiet fails silently — output would
 		// pollute every session and the next start retries. The error is kept
 		// in meta so `memdb stats` can still surface it.
 		return nil
@@ -461,7 +461,7 @@ func describeAge(ts string, now time.Time) string {
 	return fmt.Sprintf("%s (%d days ago)", ts, int(now.Sub(t).Hours()/24))
 }
 
-// --- eval (PLAN.md Phase 2) ---
+// --- eval ---
 //
 // Turns tuning into a number. Parses `query ||| expected-substring` lines from
 // a golden file, runs each query, reports HIT/MISS + rank, and prints a summary
